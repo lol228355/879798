@@ -3,9 +3,9 @@ import asyncio
 from telethon import TelegramClient, events
 
 # ==================== НАСТРОЙКИ ====================
-API_ID = 1234567  # Замени на свой api_id
-API_HASH = 'your_api_hash_here'  # Замени на свой api_hash
-PHONE_NUMBER = '+7XXXXXXXXXX'  # Твой номер телефона
+API_ID = 21214665  # Замени на свой api_id
+API_HASH = '84c166ca005e88c02ea2d8085b9723bd'  # Замени на свой api_hash
+PHONE_NUMBER = '+16205511233'  # Твой номер телефона
 
 # Паттерн для номера телефона (только номер, без другого текста)
 PHONE_PATTERN = re.compile(r'^(\+7|7|8)?\d{10}$')
