@@ -28,7 +28,7 @@ class Form(StatesGroup):
     choosing_tariff = State()
     entering_number = State()
     entering_code = State()
-    broadcasting = State() # Состояние для рассылки
+    broadcasting = State()
 
 # --- БАЗА ДАННЫХ ---
 async def init_db():
@@ -49,7 +49,7 @@ def main_kb():
 def tariff_kb():
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="⚡️ 1.5$ Рег Момент")],
-        [KeyboardButton(text="🌙 2.5$ Вбх вечер")],
+        [KeyboardButton(text="🌙 2.0$ Выплата вечером")], # Обновил цену и название тут
         [KeyboardButton(text="🔙 Назад")]
     ], resize_keyboard=True)
 
@@ -101,13 +101,13 @@ async def admin_panel(message: types.Message):
     if message.from_user.id in ADMIN_IDS:
         await message.answer(f"🛠 Админ-панель", reply_markup=admin_kb())
 
-# --- ЛОГИКА РАССЫЛКИ (ИСПРАВЛЕНО) ---
+# --- ЛОГИКА РАССЫЛКИ ---
 
 @dp.callback_query(F.data == "admin_broadcast")
 async def broadcast_command(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS: return
     await state.set_state(Form.broadcasting)
-    await callback.message.answer("📝 **Введите текст рассылки** (можно с фото):\nДля отмены напишите 'отмена'", parse_mode="Markdown")
+    await callback.message.answer("📝 **Введите текст рассылки**:\nДля отмены напишите 'отмена'", parse_mode="Markdown")
     await callback.answer()
 
 @dp.message(Form.broadcasting)
@@ -122,18 +122,17 @@ async def perform_broadcast(message: types.Message, state: FSMContext):
             users = await cursor.fetchall()
 
     count = 0
-    await message.answer(f"⌛ Начинаю рассылку на {len(users)} пользователей...")
+    await message.answer(f"⌛ Начинаю рассылку...")
     
     for user in users:
         try:
             await message.copy_to(chat_id=user[0])
             count += 1
-            await asyncio.sleep(0.05) # Защита от спам-фильтра ТГ
-        except Exception:
-            pass
+            await asyncio.sleep(0.05)
+        except Exception: pass
 
     await state.clear()
-    await message.answer(f"✅ Рассылка завершена!\nУспешно отправлено: {count}")
+    await message.answer(f"✅ Рассылка завершена! Отправлено: {count}")
 
 # --- ЛОГИКА СДАЧИ НОМЕРА ---
 
@@ -180,7 +179,7 @@ async def rent_number(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("⏳ **Номер отправлен!** Ожидайте, скоро админ запросит код.")
 
-# --- ВОРК СТАТУС / ВЗЯТИЕ В РАБОТУ ---
+# --- ВЗЯТИЕ В РАБОТУ ---
 
 @dp.callback_query(F.data.startswith("take_"))
 async def take_req(callback: CallbackQuery):
@@ -218,16 +217,15 @@ async def work_toggle(callback: CallbackQuery):
     global WORK_STATUS
     action = callback.data.split("_")[1]
     WORK_STATUS = (action == "start")
+    msg = "🚀 **Работаем!** Принимаем номера." if WORK_STATUS else "😴 **Отдыхаем!** Прием временно закрыт."
     
-    # Авто-рассылка о начале/конце ворка
-    msg = "🚀 **Работаем!** Можно сдавать номера." if WORK_STATUS else "😴 **Отдыхаем!** Прием временно закрыт."
     async with aiosqlite.connect('bot_database.db') as db:
         async with db.execute('SELECT user_id FROM users') as cursor:
             users = await cursor.fetchall()
     for u in users:
         try: await bot.send_message(u[0], msg, parse_mode="Markdown")
         except: pass
-    await callback.answer(f"Статус: {msg}")
+    await callback.answer(f"Статус изменен")
 
 async def main():
     await init_db()
