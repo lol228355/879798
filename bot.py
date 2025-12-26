@@ -12,7 +12,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 TOKEN = "8220500651:AAHKBf-AZ3UT7kH1oOrEEl-NwDWSE4DYoWw" 
 ADMIN_ID = 7323981601 
 CHANNEL_LINK = "https://t.me/+4K_4dildrI82ODY6"  # Ссылка приглашение в приватный канал
-CHANNEL_ID = -1001234567890 # ВАЖНО: ID канала (должен начинаться с -100)
+CHANNEL_ID = -1003532318157 # ВАЖНО: ID канала (должен начинаться с -100)
 
 # --- НАСТРОЙКА ЛОГОВ И БОТА ---
 logging.basicConfig(level=logging.INFO)
