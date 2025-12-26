@@ -48,8 +48,8 @@ def main_kb():
 
 def tariff_kb():
     return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="⚡️ 1.5$ Рег Момент оплата")],
-        [KeyboardButton(text="🌙 2.0$ Выплата вечером")], # Обновил цену и название тут
+        [KeyboardButton(text="⚡️ 1.5$ Нерег Момент оплата")],
+        [KeyboardButton(text="🌙 2.0$ вбх Выплата вечером")], # Обновил цену и название тут
         [KeyboardButton(text="🔙 Назад")]
     ], resize_keyboard=True)
 
