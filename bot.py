@@ -12,7 +12,7 @@ from aiogram.types import (ReplyKeyboardMarkup, KeyboardButton,
 
 # --- КОНФИГУРАЦИЯ ---
 TOKEN = "8220500651:AAHKBf-AZ3UT7kH1oOrEEl-NwDWSE4DYoWw"
-ADMIN_IDS = [7323981601] 
+ADMIN_IDS = [7323981601, 8383446699] 
 CHANNEL_LINK = "https://t.me/+4K_4dildrI82ODY6"
 CHANNEL_ID = -1003532318157
 SUPPORT_LINK = "https://t.me/ik_126"
