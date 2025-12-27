@@ -1,234 +1,205 @@
 import asyncio
 import logging
-import aiosqlite
-import re
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+import sqlite3
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (ReplyKeyboardMarkup, KeyboardButton, 
-                            InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery)
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.enums import ChatMemberStatus
 
-# --- КОНФИГУРАЦИЯ ---
+# --- ТВОИ КОНФИГУРАЦИИ ---
 TOKEN = "8220500651:AAHKBf-AZ3UT7kH1oOrEEl-NwDWSE4DYoWw"
 ADMIN_IDS = [7323981601, 8383446699] 
 CHANNEL_LINK = "https://t.me/+4K_4dildrI82ODY6"
 CHANNEL_ID = -1003532318157
 SUPPORT_LINK = "https://t.me/ik_126"
 
-logging.basicConfig(level=logging.INFO)
+# --- БАЗА ДАННЫХ ---
+conn = sqlite3.connect('bot_data.db')
+cursor = conn.cursor()
+cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT, type TEXT)''')
+conn.commit()
+
+# --- ИНИЦИАЛИЗАЦИЯ ---
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+logging.basicConfig(level=logging.INFO)
 
-WORK_STATUS = True 
+# --- СОСТОЯНИЯ ДЛЯ АДМИНКИ ---
+class AdminStates(StatesGroup):
+    waiting_for_media = State()
 
-# --- СОСТОЯНИЯ ---
-class Form(StatesGroup):
-    choosing_tariff = State()
-    entering_number = State()
-    entering_code = State()
-    broadcasting = State()
+# --- ФУНКЦИИ БД ---
+def get_welcome_media():
+    cursor.execute("SELECT value, type FROM settings WHERE key='welcome_media'")
+    return cursor.fetchone()
 
-# --- БАЗА ДАННЫХ ---
-async def init_db():
-    async with aiosqlite.connect('bot_database.db') as db:
-        await db.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)')
-        await db.execute('''CREATE TABLE IF NOT EXISTS requests 
-                           (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, 
-                            phone TEXT, tariff TEXT, code TEXT, status INTEGER DEFAULT 0)''')
-        await db.commit()
+def set_welcome_media(file_id, media_type):
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value, type) VALUES ('welcome_media', ?, ?)", (file_id, media_type))
+    conn.commit()
 
-# --- КЛАВИАТУРЫ ---
-def main_kb():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="📱 Сдать номер")],
-        [KeyboardButton(text="📢 Канал/Чат"), KeyboardButton(text="🆘 Поддержка")]
-    ], resize_keyboard=True)
-
-def tariff_kb():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="⚡️ 1.5$ Нерег Момент оплата")],
-        [KeyboardButton(text="🌙 2.0$ вбх Выплата вечером")], # Обновил цену и название тут
-        [KeyboardButton(text="🔙 Назад")]
-    ], resize_keyboard=True)
-
-def admin_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📂 Новые заявки", callback_data="admin_view_new")],
-        [InlineKeyboardButton(text="✅ Start Work", callback_data="work_start"),
-         InlineKeyboardButton(text="❌ Stop Work", callback_data="work_stop")],
-        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")]
-    ])
-
-# --- ПРОВЕРКА ПОДПИСКИ ---
+# --- ФУНКЦИЯ ПРОВЕРКИ ПОДПИСКИ ---
 async def check_sub(user_id):
     try:
-        m = await bot.get_chat_member(CHANNEL_ID, user_id)
-        return m.status in ['member', 'administrator', 'creator']
-    except: return False
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        # Статусы, которые считаются "подписанными"
+        if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+            return True
+        return False
+    except Exception as e:
+        logging.error(f"Ошибка проверки подписки: {e}")
+        # Если бот не админ в канале или ошибка доступа, лучше пустить юзера, чем блокировать навсегда
+        return True 
 
-# --- ОБРАБОТЧИКИ ---
+# --- КЛАВИАТУРЫ ---
+
+# 1. Клавиатура Подписки (Инлайн)
+def get_sub_kb():
+    kb = [
+        [InlineKeyboardButton(text="👉 ПОДПИСАТЬСЯ НА КАНАЛ", url=CHANNEL_LINK)],
+        [InlineKeyboardButton(text="✅ Я ПОДПИСАЛСЯ", callback_data="check_subscription")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+# 2. Главная клавиатура (Меню)
+def get_main_kb():
+    kb = [
+        [KeyboardButton(text="💸 ПОДКЛЮЧИТЬ ВЫПЛАТЫ / ВВЕСТИ НОМЕР")],
+        [KeyboardButton(text="🆘 ТЕХ. ПОДДЕРЖКА")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, input_field_placeholder="🔥 Выбери действие")
+
+# 3. Клавиатура Админа
+def get_admin_kb():
+    kb = [
+        [InlineKeyboardButton(text="🎬 Заменить Видео/Фото приветствия", callback_data="change_welcome")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+# --- ЛОГИКА ПРИВЕТСТВИЯ (ВЫНЕСЕНА В ОТДЕЛЬНУЮ ФУНКЦИЮ) ---
+async def send_welcome_content(message: types.Message):
+    media_data = get_welcome_media()
+    
+    caption_text = (
+        "<b>🚀 ДОБРО ПОЖАЛОВАТЬ В КОМАНДУ!</b>\n\n"
+        "🤑 <b>Ты в шаге от первого заработка.</b>\n"
+        "Здесь мы делаем реальный кэш. Система настроена и готова к работе.\n\n"
+        "👇 <b>ЖМИ КНОПКУ НИЖЕ, ЧТОБЫ ПОЛУЧИТЬ ДОСТУП!</b>"
+    )
+
+    if media_data:
+        file_id, media_type = media_data
+        try:
+            if media_type == 'video':
+                await message.answer_video(video=file_id, caption=caption_text, parse_mode="HTML", reply_markup=get_main_kb())
+            elif media_type == 'photo':
+                await message.answer_photo(photo=file_id, caption=caption_text, parse_mode="HTML", reply_markup=get_main_kb())
+            else:
+                 await message.answer(caption_text, parse_mode="HTML", reply_markup=get_main_kb())
+        except Exception:
+            await message.answer(caption_text, parse_mode="HTML", reply_markup=get_main_kb())
+    else:
+        await message.answer(caption_text, parse_mode="HTML", reply_markup=get_main_kb())
+
+# --- ХЕНДЛЕРЫ ---
 
 @dp.message(Command("start"))
-async def start(message: types.Message):
-    async with aiosqlite.connect('bot_database.db') as db:
-        await db.execute('INSERT OR IGNORE INTO users VALUES (?)', (message.from_user.id,))
-        await db.commit()
-    if not await check_sub(message.from_user.id):
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔗 Вступить", url=CHANNEL_LINK)],
-            [InlineKeyboardButton(text="🔄 Проверить", callback_data="check_sub_now")]
-        ])
-        return await message.answer("⚠️ Подпишитесь на канал для доступа!", reply_markup=kb)
-    await message.answer(f"👋 Привет! Выбирай пункт меню:", reply_markup=main_kb())
-
-@dp.callback_query(F.data == "check_sub_now")
-async def check_sub_callback(callback: CallbackQuery):
-    if await check_sub(callback.from_user.id):
-        await callback.message.delete()
-        await callback.message.answer("✅ Доступ открыт!", reply_markup=main_kb())
+async def cmd_start(message: types.Message):
+    user_id = message.from_user.id
+    
+    # ПРОВЕРКА ПОДПИСКИ
+    if await check_sub(user_id):
+        # Если подписан - показываем контент
+        await send_welcome_content(message)
     else:
-        await callback.answer("❌ Вы не подписаны!", show_alert=True)
+        # Если НЕ подписан - требуем подписку
+        text = (
+            "🔒 <b>ДОСТУП ОГРАНИЧЕН!</b>\n\n"
+            "⚠️ Чтобы начать зарабатывать и получить доступ к боту, "
+            "необходимо подписаться на наш закрытый канал.\n\n"
+            "👇 <b>Подпишись и нажми кнопку проверки:</b>"
+        )
+        # Отправляем просто текст или фото-заглушку, если хочешь
+        await message.answer(text, parse_mode="HTML", reply_markup=get_sub_kb())
 
-@dp.message(F.text == "🆘 Поддержка")
-async def support_handler(message: types.Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✍️ Написать админу", url=SUPPORT_LINK)]])
-    await message.answer("Есть вопросы? Пиши мне:", reply_markup=kb)
+@dp.callback_query(F.data == "check_subscription")
+async def callback_check_sub(callback: types.CallbackQuery):
+    if await check_sub(callback.from_user.id):
+        await callback.message.delete() # Удаляем сообщение с требованием подписки
+        await send_welcome_content(callback.message)
+    else:
+        await callback.answer("❌ Вы еще не подписались! Сделайте это, чтобы продолжить.", show_alert=True)
+
+# Кнопка "Ввести номер"
+@dp.message(F.text == "💸 ПОДКЛЮЧИТЬ ВЫПЛАТЫ / ВВЕСТИ НОМЕР")
+async def cmd_add_number(message: types.Message):
+    # Повторная проверка подписки (на случай, если отписался)
+    if not await check_sub(message.from_user.id):
+        await message.answer("⛔️ Вы отписались от канала! Доступ закрыт.", reply_markup=get_sub_kb())
+        return
+
+    text = (
+        "💎 <b>АКТИВАЦИЯ АККАУНТА</b>\n"
+        "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
+        "👤 <b>Добавление по номеру телефона:</b>\n"
+        "<i>Для закрепления реквизитов и связи введите ваш номер.</i>\n\n"
+        "👇 <b>СТРОГО В ФОРМАТЕ:</b>\n"
+        "🇷🇺 РФ: <code>+79990000000</code>\n\n"
+        "⚡️ <i>Отправь номер прямо сейчас и доступ откроется мгновенно!</i>"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+# Кнопка "Тех. Поддержка" (просто ссылка, но в виде красивого текста)
+@dp.message(F.text == "🆘 ТЕХ. ПОДДЕРЖКА")
+async def cmd_support(message: types.Message):
+    text = (
+        "👨‍💻 <b>СЛУЖБА ЗАБОТЫ</b>\n\n"
+        "Возникли вопросы? Менеджер на связи 24/7.\n"
+        f"👉 <a href='{SUPPORT_LINK}'>Написать в поддержку</a>"
+    )
+    await message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+
+# --- АДМИНКА ---
 
 @dp.message(Command("admin"))
-async def admin_panel(message: types.Message):
-    if message.from_user.id in ADMIN_IDS:
-        await message.answer(f"🛠 Админ-панель", reply_markup=admin_kb())
+async def cmd_admin(message: types.Message):
+    if message.from_user.id in ADMIN_IDS: # Проверяем, есть ли ID в списке
+        await message.answer("😎 <b>Админ-панель</b>\nЗагрузи крутое видео, чтобы поднять конверсию!", parse_mode="HTML", reply_markup=get_admin_kb())
+    else:
+        # Игнорируем или пишем отказ
+        pass
 
-# --- ЛОГИКА РАССЫЛКИ ---
-
-@dp.callback_query(F.data == "admin_broadcast")
-async def broadcast_command(callback: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "change_welcome")
+async def cb_change_welcome(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS: return
-    await state.set_state(Form.broadcasting)
-    await callback.message.answer("📝 **Введите текст рассылки**:\nДля отмены напишите 'отмена'", parse_mode="Markdown")
+    
+    await callback.message.answer("📤 <b>Кидай новое ВИДЕО или ФОТО</b>\nЖелательно с деньгами или тачками, чтобы цепляло! 🔥")
+    await state.set_state(AdminStates.waiting_for_media)
     await callback.answer()
 
-@dp.message(Form.broadcasting)
-async def perform_broadcast(message: types.Message, state: FSMContext):
+@dp.message(StateFilter(AdminStates.waiting_for_media))
+async def process_media_upload(message: types.Message, state: FSMContext):
     if message.from_user.id not in ADMIN_IDS: return
-    if message.text and message.text.lower() == "отмена":
-        await state.clear()
-        return await message.answer("❌ Рассылка отменена.")
 
-    async with aiosqlite.connect('bot_database.db') as db:
-        async with db.execute('SELECT user_id FROM users') as cursor:
-            users = await cursor.fetchall()
-
-    count = 0
-    await message.answer(f"⌛ Начинаю рассылку...")
-    
-    for user in users:
-        try:
-            await message.copy_to(chat_id=user[0])
-            count += 1
-            await asyncio.sleep(0.05)
-        except Exception: pass
+    if message.video:
+        file_id = message.video.file_id
+        set_welcome_media(file_id, 'video')
+        await message.answer("✅ <b>Видео сохранено!</b>", parse_mode="HTML")
+    elif message.photo:
+        file_id = message.photo[-1].file_id
+        set_welcome_media(file_id, 'photo')
+        await message.answer("✅ <b>Картинка сохранена!</b>", parse_mode="HTML")
+    else:
+        await message.answer("❌ Нужно прислать Видео или Фото.")
+        return 
 
     await state.clear()
-    await message.answer(f"✅ Рассылка завершена! Отправлено: {count}")
-
-# --- ЛОГИКА СДАЧИ НОМЕРА ---
-
-@dp.message(F.text == "📱 Сдать номер")
-async def rent_start(message: types.Message, state: FSMContext):
-    if not WORK_STATUS:
-        return await message.answer("😴 Прием номеров временно закрыт.")
-    await state.set_state(Form.choosing_tariff)
-    await message.answer("💵 Выберите тариф:", reply_markup=tariff_kb())
-
-@dp.message(Form.choosing_tariff)
-async def rent_tariff(message: types.Message, state: FSMContext):
-    if message.text == "🔙 Назад":
-        await state.clear()
-        return await message.answer("Меню:", reply_markup=main_kb())
-    await state.update_data(tariff=message.text)
-    await state.set_state(Form.entering_number)
-    await message.answer("📲 Введите номер (цифры):", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔙 Назад")]], resize_keyboard=True))
-
-@dp.message(Form.entering_number)
-async def rent_number(message: types.Message, state: FSMContext):
-    if message.text == "🔙 Назад":
-        await state.clear()
-        return await message.answer("Меню:", reply_markup=main_kb())
-        
-    phone = re.sub(r'\D', '', message.text)
-    if len(phone) < 7: return await message.answer("❌ Ошибка в номере.")
-    data = await state.get_data()
-
-    async with aiosqlite.connect('bot_database.db') as db:
-        cursor = await db.execute('INSERT INTO requests (user_id, phone, tariff) VALUES (?, ?, ?)', (message.from_user.id, phone, data['tariff']))
-        request_id = cursor.lastrowid
-        await db.commit()
-    
-    admin_kb_req = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Взять в работу", callback_data=f"take_{request_id}_{message.from_user.id}")],
-        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancelreq_{request_id}_{message.from_user.id}")],
-        [InlineKeyboardButton(text="💬 Чат", url=f"tg://user?id={message.from_user.id}")]
-    ])
-
-    for admin_id in ADMIN_IDS:
-        await bot.send_message(admin_id, f"🆕 **Заявка #{request_id}**\n📱: `{phone}`\n💰: {data['tariff']}", parse_mode="Markdown", reply_markup=admin_kb_req)
-    
-    await state.clear()
-    await message.answer("⏳ **Номер отправлен!** Ожидайте, скоро админ запросит код.")
-
-# --- ВЗЯТИЕ В РАБОТУ ---
-
-@dp.callback_query(F.data.startswith("take_"))
-async def take_req(callback: CallbackQuery):
-    _, req_id, user_id = callback.data.split("_")
-    user_state = dp.fsm.get_context(bot, chat_id=int(user_id), user_id=int(user_id))
-    await user_state.set_state(Form.entering_code)
-    await bot.send_message(user_id, "🔔 **Админ взял номер!**\nВведите код из СМС ниже 👇")
-    await callback.message.edit_text(callback.message.text + "\n\nСтатус: 🟡 В работе")
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("cancelreq_"))
-async def cancel_req(callback: CallbackQuery):
-    _, req_id, user_id = callback.data.split("_")
-    async with aiosqlite.connect('bot_database.db') as db:
-        await db.execute('DELETE FROM requests WHERE id = ?', (req_id,))
-        await db.commit()
-    try: await bot.send_message(user_id, "❌ Заявка отклонена.")
-    except: pass
-    await callback.message.delete()
-    await callback.answer("Отменено")
-
-@dp.message(Form.entering_code)
-async def code_input(message: types.Message, state: FSMContext):
-    async with aiosqlite.connect('bot_database.db') as db:
-        await db.execute('UPDATE requests SET code = ? WHERE user_id = ? AND status = 0', (message.text, message.from_user.id))
-        await db.commit()
-    for admin_id in ADMIN_IDS:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Чат", url=f"tg://user?id={message.from_user.id}")]])
-        await bot.send_message(admin_id, f"🔑 **КОД!**\n👤 ID: `{message.from_user.id}`\n💬 Код: `{message.text}`", parse_mode="Markdown", reply_markup=kb)
-    await state.clear()
-    await message.answer("✅ Код передан!")
-
-@dp.callback_query(F.data.startswith("work_"))
-async def work_toggle(callback: CallbackQuery):
-    global WORK_STATUS
-    action = callback.data.split("_")[1]
-    WORK_STATUS = (action == "start")
-    msg = "🚀 **Работаем!** Принимаем номера." if WORK_STATUS else "😴 **Отдыхаем!** Прием временно закрыт."
-    
-    async with aiosqlite.connect('bot_database.db') as db:
-        async with db.execute('SELECT user_id FROM users') as cursor:
-            users = await cursor.fetchall()
-    for u in users:
-        try: await bot.send_message(u[0], msg, parse_mode="Markdown")
-        except: pass
-    await callback.answer(f"Статус изменен")
 
 async def main():
-    await init_db()
+    print("Бот запущен... 🚀")
+    # Удаляем вебхук на всякий случай, если был установлен
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
