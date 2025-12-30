@@ -13,7 +13,7 @@ from aiogram.types import (ReplyKeyboardMarkup, KeyboardButton,
 from aiogram.enums import ChatMemberStatus
 
 # --- КОНФИГУРАЦИЯ ---
-TOKEN = "8220500651:AAHKBf-AZ3UT7kH1oOrEEl-NwDWSE4DYoWw"
+TOKEN = "8527593341:AAFSVj-6REvcGL7UpsMlRWqnZlZw8GaXA4Y"
 ADMIN_IDS = [7323981601, 8383446699] 
 CHANNEL_LINK = "https://t.me/+4K_4dildrI82ODY6"
 CHANNEL_ID = -1003532318157
