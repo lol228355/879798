@@ -1,3 +1,10 @@
 aiogram>=3.0.0
 aiosqlite
 requests
+aiocryptopay
+asyncio
+logging
+random
+time
+json
+datetime
